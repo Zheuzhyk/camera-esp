@@ -57,7 +57,7 @@ static void handleCmd(const String& raw) {
   if (!line.length()) return;
 
   if (line.equalsIgnoreCase("STATUS")) {
-    if (WiFi.status() == WL_CONNECTED) bleNotify("WIFI:CONNECTED " + WiFi.localIP().toString());
+    if (WiFi.status() == WL_CONNECTED) bleNotify(WiFi.localIP().toString());
     else bleNotify("WIFI:DISCONNECTED");
     return;
   }
