@@ -77,8 +77,17 @@ static void handleCmd(const String& raw) {
   String ssid, pass;
   if (parseCreds(line, ssid, pass)) {
     bleNotify("TRY:" + ssid);
-    WiFi.mode(WIFI_STA);
     enable_led(true);
+    WiFi.setAutoReconnect(false);
+    WiFi.persistent(true);
+    WiFi.disconnect(true, true);
+    delay(150);
+    esp_wifi_stop();
+    delay(50);
+    esp_wifi_start();
+    delay(50);
+    WiFi.mode(WIFI_STA);
+    WiFi.setSleep(false);
     WiFi.begin(ssid.c_str(), pass.c_str());
 
     uint32_t t0 = millis(); bool ok = false;
