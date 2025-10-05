@@ -25,6 +25,12 @@ static NimBLECharacteristic* s_rxChr   = nullptr; // client writes here
 static bool     s_bleActive  = false;
 static uint32_t s_deadlineMs = 0;
 
+// ---- RX assemble buffer for long writes ----
+static String   s_rxBuf;
+static uint32_t s_rxLastAt = 0;
+static const uint32_t kRxAssembleQuietMs = 120;   // таймаут «тишины» между чанками
+static const size_t   kRxMaxLen           = 2048;  // защитный лимит буфера
+
 // ===== утилиты =====
 static String trimCRLF(String s){ s.replace("\r",""); s.replace("\n",""); s.trim(); return s; }
 
@@ -105,9 +111,27 @@ public:
   // старые версии
   void onWrite(NimBLECharacteristic* chr) {
     std::string v = chr->getValue();
-    String s; s.reserve(v.size());
-    for (char c: v) s += c;
-    handleCmd(s);
+    if (v.empty()) return;
+
+    // --- Сборка длинных сообщений из нескольких BLE-чанков ---
+    // Защита от переполнения: если не влазит — сбрасываем буфер.
+    if (s_rxBuf.length() + v.size() > kRxMaxLen) {
+      s_rxBuf = "";
+    }
+    for (char c: v) s_rxBuf += c;
+    s_rxLastAt = millis();
+
+    // Если пришёл разделитель — разберём все готовые строки (CR/LF)
+    int pos;
+    while ( (pos = s_rxBuf.indexOf('\n')) >= 0 || (pos = s_rxBuf.indexOf('\r')) >= 0 ) {
+      String line = s_rxBuf.substring(0, pos);
+      // пропустим подряд идущие \r\n
+      int drop = 1;
+      while (pos+drop < (int)s_rxBuf.length() && (s_rxBuf[pos+drop]=='\r' || s_rxBuf[pos+drop]=='\n')) drop++;
+      s_rxBuf.remove(0, pos + drop);
+      line.trim();
+      if (line.length()) handleCmd(line);
+    }
   }
   // новые версии (с ConnInfo) — просто делегируем
   void onWrite(NimBLECharacteristic* chr, NimBLEConnInfo&) { onWrite(chr); }
@@ -116,7 +140,7 @@ public:
 class ServerCallbacks : public NimBLEServerCallbacks {
 public:
   void onConnect(NimBLEServer*) { Serial.println("[BLE] Central connected"); }
-  void onDisconnect(NimBLEServer*) { 
+  void onDisconnect(NimBLEServer*) {
     Serial.println("[BLE] Central disconnected");
     NimBLEDevice::startAdvertising();
   }
@@ -132,8 +156,9 @@ static void startBLE() {
 
   Serial.println("[BLE] Starting provisioning (NimBLE)...");
   NimBLEDevice::init(kBleName);
-  // безопасные дефолты — совместимы с разными версиями
   NimBLEDevice::setPower(ESP_PWR_LVL_P3);
+  // (опционально) Попросим большую MTU — реальное значение согласуется клиентом
+  NimBLEDevice::setMTU(247);
 
   s_server = NimBLEDevice::createServer();
   s_server->setCallbacks(new ServerCallbacks());
@@ -147,7 +172,7 @@ static void startBLE() {
 
   NimBLEAdvertising* adv = NimBLEDevice::getAdvertising();
   adv->addServiceUUID(kServiceUUID);
-  // adv->setScanResponse(true); // не во всех версиях — поэтому без этого
+  // adv->setScanResponse(true); // иногда недоступно — пропускаем
   adv->start();
 
   s_bleActive = true;
@@ -176,5 +201,12 @@ void BTProv_loop() {
     Serial.println("[BLE] TTL expired, closing");
     stopBLE();
     s_deadlineMs = 0;
+  }
+
+  // --- RX assemble: флаш по «тишине», даже если нет \n ---
+  if (s_rxBuf.length() && (uint32_t)(millis() - s_rxLastAt) > kRxAssembleQuietMs) {
+    String line = s_rxBuf; s_rxBuf = "";
+    line.trim();
+    if (line.length()) handleCmd(line);
   }
 }
